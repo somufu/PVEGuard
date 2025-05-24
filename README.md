@@ -96,7 +96,7 @@ Katkılarınız her zaman beklerim! Lütfen bir "issue" açarak veya bir "pull r
 
 ## 📜 Lisans
 
-Bu proje Copyright (c) 2023 Muhammed Furkan SOYLU Lisansı altında lisanslanmıştır. Daha fazla bilgi için `LICENSE` dosyasına bakın.
+Bu proje Copyright (c) 2025 Muhammed Furkan SOYLU Lisansı altında lisanslanmıştır. Daha fazla bilgi için `LICENSE` dosyasına bakın.
 
 ## 💡 Gelecek Planları
 
