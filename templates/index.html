@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PVEGuard - Snapshot Yönetimi</title>
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .metrics-cell { font-size: 0.9em; line-height: 1.4; }
+        .metric-label { font-weight: 600; color: #555; }
+        .metric-value { color: #333; }
+        .metric-value a, .sparkline-cpu, .sparkline-ram { cursor: pointer; text-decoration: none; color: #3498db; }
+        .metric-value a:hover, .sparkline-cpu:hover, .sparkline-ram:hover { color: #2980b9; text-decoration: underline; }
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.6); padding-top: 60px; }
+        .modal-content { background-color: #fefefe; margin: 5% auto; padding: 20px; border: 1px solid #888; width: 80%; max-width: 700px; border-radius: 8px; position: relative; }
+        .close-button { color: #aaa; float: right; font-size: 28px; font-weight: bold; position: absolute; top: 10px; right: 20px; }
+        .close-button:hover, .close-button:focus { color: black; text-decoration: none; cursor: pointer; }
+        #chartContainer { width: 100%; height: 350px; }
+        .timeframe-buttons { margin-bottom: 15px; text-align: center; }
+        .timeframe-buttons button { margin: 0 5px; padding: 8px 12px; background-color: #ecf0f1; color: #34495e; border: 1px solid #bdc3c7; border-radius: 4px; cursor: pointer; font-weight: 500; }
+        .timeframe-buttons button:hover { background-color: #bdc3c7; }
+        .timeframe-buttons button.active { background-color: #3498db; color: white; border-color: #3498db; }
+    </style>
+</head>
+<body>
+    <div class="navbar">
+        <ul>
+            <li><a href="{{ url_for('index') }}" class="active">Gösterge Paneli</a></li>
+            <li><a href="{{ url_for('about_page') }}">Hakkımızda</a></li>
+        </ul>
+    </div>
+
+    <div class="page-content">
+        <h1>PVEGuard: Snapshot ve Kaynak Yönetimi</h1>
+        <div id="flash-message-container"></div>
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            <div class="flash-messages initial-flash">
+              {% for category, message in messages %}
+                <div class="alert alert-{{ category if category != 'error_detail' else 'danger' }}">{{ message }}</div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        {% endwith %}
+
+        <div class="filter-form">
+            <form method="GET" action="{{ url_for('index') }}">
+                <div class="form-group"> <label for="max_date">Max Tarih (Snap.):</label> <input type="date" id="max_date" name="max_date" value="{{ current_params.max_date }}"> </div>
+                <div class="form-group"> <label for="old_days">Eskilik (Snap.):</label> <input type="number" id="old_days" name="old_days" value="{{ current_params.old_days }}" min="-1" title="-1: Tüm snapshot'ları yaşlı işaretle"> </div>
+                <div class="form-group"> <label for="idle_days">Idle VM Eşiği (Gün):</label> <input type="number" id="idle_days" name="idle_days" value="{{ current_params.idle_days }}" min="0" title="Kapalı ve en yeni snapshot'ı bu kadar günden eski olan VM'ler"> </div>
+                <input type="hidden" name="sort_by" value="{{ current_params.sort_by }}"> <input type="hidden" name="order" value="{{ current_params.order }}">
+                <div class="form-group"> <input type="submit" value="Filtrele / Uygula"> </div>
+            </form>
+        </div>
+
+        {% if orphaned_old_root_snapshot_count > 0 %} <div class="orphaned-snapshot-notice"><strong>ÇOK ÖNEMLİ:</strong> Listede <strong>{{ orphaned_old_root_snapshot_count }}</strong> adet potansiyel olarak <span class="orphaned-highlight-text">"sahipsiz"</span>, {{ current_params.old_days if current_params.old_days != -1 else "tüm" }} günden eski ve kök snapshot bulunmaktadır! Dikkatlice inceleyin!</div> {% endif %}
+        {% if underutilized_vms_count > 0 %} <div class="underutilized-vm-notice"><strong>Optimizasyon Önerisi:</strong> <strong>{{ underutilized_vms_count }}</strong> adet VM kaynak azaltma önerisine sahip.</div> {% endif %}
+        {% if idle_vms_count > 0 %} <div class="idle-vm-notice"><strong>Dikkat:</strong> <strong>{{ idle_vms_count }}</strong> adet VM kapalı ve en yeni snapshot'ı {{ idle_vm_threshold_days }} günden eski.</div> {% endif %}
+        {% if snapshots %}
+            {% set old_snapshots_count = snapshots | selectattr('is_old') | rejectattr('is_on_stopped_vm_and_old') | rejectattr('is_orphaned_old_root') | list | length %}
+            {% set stopped_vm_old_snapshots_count = snapshots | selectattr('is_on_stopped_vm_and_old') | rejectattr('is_orphaned_old_root') | list | length %}
+            {% if old_snapshots_count > 0 %}<div class="old-snapshot-notice"><strong>Bilgi:</strong> Listede {{ current_params.old_days if current_params.old_days != -1 else "tüm" }} günden eski <strong>{{ old_snapshots_count }}</strong> adet snapshot bulunmaktadır.</div>{% endif %}
+            {% if stopped_vm_old_snapshots_count > 0 %}<div class="stopped-vm-snapshot-notice"><strong>Önemli:</strong> Kapalı VM'lere ait {{ current_params.old_days if current_params.old_days != -1 else "tüm" }} günden eski <strong>{{ stopped_vm_old_snapshots_count }}</strong> adet snapshot var.</div>{% endif %}
+        {% endif %}
+
+        <h2>Sanal Makineler (QEMU)</h2>
+        {% if all_qemu_vms %}
+            <table class="performance-table">
+                <thead>
+                    <tr> <th>ID</th><th>Adı</th><th>Node</th><th>Durum</th> <th>CPU (Anlık/Ort./Maks) %</th> <th>RAM (Anlık/Ort./Maks) %</th> <th>Disk G/Ç (R/W Bps)</th> <th>Ağ (In/Out Bps)</th> <th>Atanan CPU/RAM</th> <th>Optimizasyon Önerisi</th> <th>Eylemler</th> </tr>
+                </thead>
+                <tbody id="vm-performance-tbody">
+                    {% for vm in all_qemu_vms %}
+                    <tr id="vm-row-{{ vm.vmid }}" class="{{ 'vm-underutilized' if vm.is_underutilized else ('vm-potentially-idle' if vm.is_potentially_idle else '') }}">
+                        <td>{{ vm.vmid }}</td> <td id="vm-name-{{ vm.vmid }}">{{ vm.name }}</td> <td id="vm-node-{{ vm.vmid }}">{{ vm.node }}</td>
+                        <td id="vm-status-{{ vm.vmid }}"> {% if vm.status == 'running' %}<span style="color: #2ecc71; font-weight: bold;">{{ vm.status }}</span> {% elif vm.status == 'stopped' %}<span style="color: #e74c3c;">{{ vm.status }}</span> {% if vm.is_potentially_idle %}<br><span class="idle-vm-highlight-text" style="font-size:0.9em;">(Potansiyel Idle!)</span>{% endif %} {% else %}<span style="color: #e67e22;">{{ vm.status }}</span>{% endif %} </td>
+                        <td id="vm-cpu-{{ vm.vmid }}" class="metrics-cell">
+                            {% if vm.status == 'running' %}
+                                <span class="metric-label">Şu An:</span> <span class="cpu-now metric-value"><a href="#" onclick="showMetricChart('{{vm.vmid}}', {{vm.name | tojson | safe}}, 'cpu_usage_percent_short', 'CPU Kullanımı (Anlık %)', 'hour'); return false;">{{ vm.cpu_usage_percent | default('N/A') }}</a></span>%<br>
+                                <span class="metric-label">Ort:</span> <span class="cpu-avg metric-value {{'underutilized-highlight-text' if vm.is_underutilized and vm.avg_cpu_usage_percent is not none and vm.avg_cpu_usage_percent < cpu_suggestion_threshold else ''}}">{{ vm.avg_cpu_usage_percent | default('N/A') }}</span>%<br>
+                                <span class="metric-label">Maks:</span> <span class="cpu-max metric-value">{{ vm.max_cpu_usage_percent | default('N/A') }}</span>%
+                                <span class="sparkline-cpu" id="sparkline-cpu-{{vm.vmid}}" onclick="showMetricChart('{{vm.vmid}}', {{vm.name | tojson | safe}}, 'cpu_usage_percent_short', 'CPU Kullanımı (Anlık %)', 'hour')" data-peity='{ "fill": ["#d1ecf1"], "stroke": "#0c5460", "height": 16, "width": 50 }'> {{ (performance_history_data.get( (vm.node, vm.vmid), {}).get('history', {}).get('cpu', []) | list | join(',')) or "0,0" }} </span>
+                            {% else %} N/A {% endif %}
+                        </td>
+                        <td id="vm-ram-{{ vm.vmid }}" class="metrics-cell">
+                            {% if vm.status == 'running' %}
+                                <span class="metric-label">Şu An:</span> <span class="ram-now metric-value"><a href="#" onclick="showMetricChart('{{vm.vmid}}', {{vm.name | tojson | safe}}, 'ram_usage_percent_short', 'RAM Kullanımı (Anlık %)', 'hour'); return false;">{{ vm.ram_usage_percent | default('N/A') }}</a></span>%<br>
+                                <span class="metric-label">Ort:</span> <span class="ram-avg metric-value {{'underutilized-highlight-text' if vm.is_underutilized and vm.avg_ram_usage_percent is not none and vm.avg_ram_usage_percent < ram_suggestion_threshold else ''}}">{{ vm.avg_ram_usage_percent | default('N/A') }}</span>%<br>
+                                <span class="metric-label">Maks:</span> <span class="ram-max metric-value">{{ vm.max_ram_usage_percent | default('N/A') }}</span>%
+                                 <span class="sparkline-ram" id="sparkline-ram-{{vm.vmid}}" onclick="showMetricChart('{{vm.vmid}}', {{vm.name | tojson | safe}}, 'ram_usage_percent_short', 'RAM Kullanımı (Anlık %)', 'hour')" data-peity='{ "fill": ["#e8f5e9"], "stroke": "#2ecc71", "height": 16, "width": 50 }'> {{ (performance_history_data.get( (vm.node, vm.vmid), {}).get('history', {}).get('ram', []) | list | join(',')) or "0,0" }} </span>
+                            {% else %} N/A {% endif %}
+                        </td>
+                        <td id="vm-disk-io-{{ vm.vmid }}" class="metrics-cell">
+                            {% if vm.status == 'running' %}
+                                <span class="metric-label">R:</span> <span class="disk-read metric-value"><a href="#" onclick="showMetricChart('{{vm.vmid}}', {{vm.name | tojson | safe}}, 'diskread_Bps', 'Disk Okuma (B/s)'); return false;">{{ vm.diskread_Bps | default('N/A') }}</a></span><br>
+                                <span class="metric-label">W:</span> <span class="disk-write metric-value"><a href="#" onclick="showMetricChart('{{vm.vmid}}', {{vm.name | tojson | safe}}, 'diskwrite_Bps', 'Disk Yazma (B/s)'); return false;">{{ vm.diskwrite_Bps | default('N/A') }}</a></span>
+                            {% else %} N/A {% endif %}
+                        </td>
+                        <td id="vm-net-io-{{ vm.vmid }}" class="metrics-cell">
+                            {% if vm.status == 'running' %}
+                                <span class="metric-label">In:</span> <span class="net-in metric-value"><a href="#" onclick="showMetricChart('{{vm.vmid}}', {{vm.name | tojson | safe}}, 'netin_Bps', 'Ağ Gelen (B/s)'); return false;">{{ vm.netin_Bps | default('N/A') }}</a></span><br>
+                                <span class="metric-label">Out:</span> <span class="net-out metric-value"><a href="#" onclick="showMetricChart('{{vm.vmid}}', {{vm.name | tojson | safe}}, 'netout_Bps', 'Ağ Giden (B/s)'); return false;">{{ vm.netout_Bps | default('N/A') }}</a></span>
+                            {% else %} N/A {% endif %}
+                        </td>
+                        <td> CPU: {{ vm.current_vcpu | default('N/A') }}<br> RAM: {{ vm.current_ram_mb | default('N/A') }} MB </td>
+                        <td class="suggestion-cell" id="vm-suggestion-{{ vm.vmid }}"> {% if vm.is_underutilized and vm.right_sizing_suggestion %} <strong>Öneri:</strong><br>{{ vm.right_sizing_suggestion | replace('; ', '<br>') | safe }} {% elif vm.is_underutilized %} Düşük kullanım tespit edildi. {% else %} - {% endif %} </td>
+                        <td class="vm-actions" id="vm-actions-{{ vm.vmid }}"> <form class="vm-action-form" method="POST" action="{{ url_for('vm_action_route', node=vm.node, vmid=vm.vmid, action='start') }}"> <button type="submit" class="btn-start" title="VM'i Başlat" {% if vm.status == 'running' %}disabled{% endif %}>Başlat</button> </form> <form class="vm-action-form" method="POST" action="{{ url_for('vm_action_route', node=vm.node, vmid=vm.vmid, action='shutdown') }}"> <button type="submit" class="btn-shutdown" title="VM'i Düzgün Kapat" {% if vm.status == 'stopped' %}disabled{% endif %}>Kapat</button> </form> <form class="vm-action-form" method="POST" action="{{ url_for('vm_action_route', node=vm.node, vmid=vm.vmid, action='stop') }}"> <button type="submit" class="btn-stop" title="VM'i Zorla Durdur" {% if vm.status == 'stopped' %}disabled{% endif %}>Durdur (Zorla)</button> </form> <form class="vm-action-form" method="POST" action="{{ url_for('vm_action_route', node=vm.node, vmid=vm.vmid, action='reboot') }}"> <button type="submit" class="btn-reboot" title="VM'i Yeniden Başlat" {% if vm.status == 'stopped' %}disabled{% endif %}>Yeniden Başlat</button> </form> </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% elif error %} <p style="color:red;">Sanal makine verileri alınamadı: {{ error }}</p>
+        {% else %} <p>Gösterilecek QEMU sanal makine bulunmamaktadır.</p>
+        {% endif %}
+
+        <h2>Snapshot Listesi</h2>
+        {% if snapshots %}
+            <form id="snapshotForm"> <table id="snapshotTable"> <thead><tr><th><input type="checkbox" id="selectAllCheckboxes" class="checkbox-select-all"></th><th>VM/CT ID</th><th class="{{ 'sorted-asc' if current_params.sort_by == 'resource' and current_params.order == 'asc' else ('sorted-desc' if current_params.sort_by == 'resource' and current_params.order == 'desc' else '') }}"> <a href="{{ url_for('index', max_date=current_params.max_date, old_days=current_params.old_days, idle_days=current_params.idle_days, sort_by='resource', order='asc' if current_params.sort_by != 'resource' or current_params.order == 'desc' else 'desc') }}">Kaynak Adı</a></th><th class="{{ 'sorted-asc' if current_params.sort_by == 'name' and current_params.order == 'asc' else ('sorted-desc' if current_params.sort_by == 'name' and current_params.order == 'desc' else '') }}"> <a href="{{ url_for('index', max_date=current_params.max_date, old_days=current_params.old_days, idle_days=current_params.idle_days, sort_by='name', order='asc' if current_params.sort_by != 'name' or current_params.order == 'desc' else 'desc') }}">Snapshot Adı</a></th><th>Açıklama</th><th class="{{ 'sorted-asc' if current_params.sort_by == 'date' and current_params.order == 'asc' else ('sorted-desc' if current_params.sort_by == 'date' and current_params.order == 'desc' else '') }}"> <a href="{{ url_for('index', max_date=current_params.max_date, old_days=current_params.old_days, idle_days=current_params.idle_days, sort_by='date', order='asc' if current_params.sort_by != 'date' or current_params.order == 'desc' else 'desc') }}">Oluşturulma Tarihi</a></th><th>RAM Dahil</th><th>Node</th></tr></thead>
+                    <tbody> {% for snapshot in snapshots %} <tr class="{{ 'snapshot-orphaned-old-root' if snapshot.is_orphaned_old_root else ('snapshot-on-stopped-vm-old' if snapshot.is_on_stopped_vm_and_old else ('snapshot-old' if snapshot.is_old else '')) }}"><td><input type="checkbox" name="selected_snapshots" value="{{ snapshot.node }}/{{ snapshot.resource_type }}/{{ snapshot.vmid }}/{{ snapshot.snap_name }}" {% if snapshot.is_orphaned_old_root %}title="POTANSİYEL SAHİPSİZ, YAŞLI KÖK SNAPSHOT!"{% elif snapshot.is_on_stopped_vm_and_old %}title="Kapalı VM'de {{ current_params.old_days if current_params.old_days != -1 else 'tüm' }} günden eski snapshot!"{% elif snapshot.is_old %}title="{{ current_params.old_days if current_params.old_days != -1 else 'tüm' }} günden eski snapshot"{% endif %}></td><td>{{ snapshot.vmid }}</td><td>{{ snapshot.resource_name | default(snapshot.resource_type ~ '-' ~ snapshot.vmid) }}</td><td>{{ snapshot.snap_name }} {% if snapshot.is_orphaned_old_root %}<strong style="color: #ffeb3b;"> (Sahipsiz Kök?)</strong>{% endif %}</td><td>{{ snapshot.description }}</td><td>{{ snapshot.create_time_iso | default('Bilinmiyor') }} {% if snapshot.is_orphaned_old_root %}<span style="font-weight:bold; color: #f8f9fa;"> (Yaşlı Kök!)</span>{% elif snapshot.is_on_stopped_vm_and_old %}<span class="stopped-vm-highlight-text"> (Kapalı VM - Eski!)</span>{% elif snapshot.is_old %}<span class="old-snapshot-highlight-text"> (Eski!)</span>{% endif %}</td><td>{{ 'Evet' if snapshot.vmstate else 'Hayır' }}</td><td>{{ snapshot.node }}</td></tr> {% endfor %} </tbody>
+                </table> <div class="action-buttons"> <button type="submit" id="deleteSnapshotsBtn">Seçili Snapshot'ları Sil</button> </div> </form>
+        {% elif error %} <p style="color:red;">Snapshot verileri alınamadı: {{ error }}</p>
+        {% else %} <p class="no-snapshots">Gösterilecek snapshot bulunamadı {% if current_params.max_date or current_params.old_days != 30 or current_params.idle_days != 60 %} (mevcut filtrelere göre){% endif %}.</p>
+        {% endif %}
+    </div>
+
+    <div id="metricModal" class="modal"> <div class="modal-content"> <span class="close-button" onclick="closeModal()">×</span> <h3 id="modalTitle">Metrik Detayı</h3> <div class="timeframe-buttons" id="timeframeButtons"> <button onclick="updateChartTimeframe('hour')" data-timeframe="hour">Son 1 Saat</button> <button onclick="updateChartTimeframe('day')" data-timeframe="day">Son 1 Gün</button> <button onclick="updateChartTimeframe('week')" data-timeframe="week">Son 1 Hafta</button> </div> <div id="chartContainer"> <canvas id="metricChart"></canvas> </div> </div> </div>
+
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/peity/3.3.0/jquery.peity.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+        let currentChart = null; let currentModalVmid = null; let currentModalMetricApiName = null;
+        let currentModalMetricTitle = null; let currentModalVmName = null;
+        const modal = document.getElementById('metricModal'); const modalTitleEl = document.getElementById('modalTitle');
+        const chartCanvas = document.getElementById('metricChart').getContext('2d');
+
+        function formatBytes(bytes, decimals = 2) { if (bytes === null || bytes === undefined || isNaN(parseFloat(String(bytes))) || !isFinite(Number(bytes))) return 'N/A'; if (Number(bytes) === 0) return '0 B'; const k = 1024; const dm = decimals < 0 ? 0 : decimals; const sizes = ['B', 'KB', 'MB', 'GB', 'TB']; const i = Math.floor(Math.log(Number(bytes)) / Math.log(k)); return parseFloat((Number(bytes) / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i]; }
+        function showFlashMessage(message, category = 'info') { const container = document.getElementById('flash-message-container'); if (!container) return; const alertDiv = document.createElement('div'); alertDiv.className = `alert alert-${category}`; alertDiv.textContent = message; container.insertBefore(alertDiv, container.firstChild); setTimeout(() => { $(alertDiv).fadeOut(500, function() { $(this).remove(); }); }, 7000); }
+        function closeModal() { modal.style.display = "none"; if (currentChart) { currentChart.destroy(); currentChart = null; } }
+        window.onclick = function(event) { if (event.target == modal) { closeModal(); } }
+
+        function showMetricChart(vmid, vmName, metricApiName, metricTitle, initialTimeframe = 'hour') {
+            currentModalVmid = vmid; currentModalVmName = vmName; currentModalMetricApiName = metricApiName; currentModalMetricTitle = metricTitle;
+            modalTitleEl.textContent = `${vmName} (${vmid}) - ${metricTitle}`; modal.style.display = "block";
+            document.querySelectorAll('#timeframeButtons button').forEach(btn => { btn.classList.remove('active'); if (btn.dataset.timeframe === initialTimeframe) { btn.classList.add('active'); } });
+            fetchMetricDataAndDrawChart(vmid, metricApiName, initialTimeframe);
+        }
+        function updateChartTimeframe(timeframe) { if (currentModalVmid && currentModalMetricApiName) { document.querySelectorAll('#timeframeButtons button').forEach(btn => { btn.classList.remove('active'); if (btn.dataset.timeframe === timeframe) { btn.classList.add('active'); } }); fetchMetricDataAndDrawChart(currentModalVmid, currentModalMetricApiName, timeframe); } }
+
+        function fetchMetricDataAndDrawChart(vmid, metricApiName, timeframe) {
+            if (currentChart) { currentChart.destroy(); }
+            const loadingText = "Veriler yükleniyor..."; const ctx = chartCanvas.canvas.getContext('2d');
+            ctx.clearRect(0, 0, chartCanvas.canvas.width, chartCanvas.canvas.height); ctx.save(); ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = '16px Segoe UI'; ctx.fillText(loadingText, chartCanvas.canvas.width / 2, chartCanvas.canvas.height / 2); ctx.restore();
+            fetch(`/api/vm_metric_history/${vmid}/${metricApiName}?timeframe=${timeframe}`)
+                .then(response => { if (!response.ok) { throw new Error(`API Hatası: ${response.status} ${response.statusText}`); } return response.json(); })
+                .then(data => {
+                    ctx.clearRect(0, 0, chartCanvas.canvas.width, chartCanvas.canvas.height);
+                    if (data.error) { console.error("Metrik geçmişi API hatası:", data.error); showFlashMessage(`Metrik verisi alınamadı: ${data.error}`, 'danger'); ctx.fillText(`Hata: ${data.error}`, chartCanvas.canvas.width / 2, chartCanvas.canvas.height / 2); return; }
+                    if (!data.labels || !data.values || data.labels.length === 0) { ctx.fillText("Bu metrik için veri bulunamadı.", chartCanvas.canvas.width / 2, chartCanvas.canvas.height / 2); return; }
+                    const chartData = { labels: data.labels.map(ts => new Date(ts * 1000).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: timeframe === 'hour' ? '2-digit': undefined })), datasets: [{ label: currentModalMetricTitle || metricApiName.replace('_Bps', ' (B/s)'), data: data.values, borderColor: '#3498db', backgroundColor: 'rgba(52, 152, 219, 0.1)', tension: 0.1, fill: true, pointRadius: timeframe === 'hour' ? 1 : 0, pointHoverRadius: 5, borderWidth: 1.5 }] };
+                    currentChart = new Chart(chartCanvas, { type: 'line', data: chartData, options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, ticks: { callback: function(value) { if (metricApiName.includes('_Bps')) { return formatBytes(value) + '/s'; } else if (metricApiName.includes('percent')) { return value.toFixed(2) + '%'; } return value; }}}}, plugins: { legend: { display: true }, tooltip: { callbacks: { label: function(context) { let label = context.dataset.label || ''; if (label) { label += ': '; } if (context.parsed.y !== null) { if (metricApiName.includes('_Bps')) { label += formatBytes(context.parsed.y) + '/s'; } else if (metricApiName.includes('percent')) { label += context.parsed.y.toFixed(2) + '%'; } else { label += context.parsed.y; }} return label; }}}}} });
+                })
+                .catch(error => { ctx.clearRect(0, 0, chartCanvas.canvas.width, chartCanvas.canvas.height); console.error('Metrik verisi çekme hatası:', error); showFlashMessage(`Metrik verisi çekilirken bir hata oluştu: ${error.message}`, 'danger'); ctx.fillText(`Hata: ${error.message}`, chartCanvas.canvas.width / 2, chartCanvas.canvas.height / 2); });
+        }
+
+        let performanceUpdateInterval;
+        function updateVmPerformance() {
+            fetch("{{ url_for('api_live_vm_performance') }}")
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) { console.error("Perf API Hatası:", data.error); return; }
+                    for (const vmid_str in data) {
+                        if (data.hasOwnProperty(vmid_str)) {
+                            const vmid = parseInt(vmid_str); const vmData = data[vmid_str]; const vmRow = document.getElementById(`vm-row-${vmid}`); if (!vmRow) continue;
+                            const vmNameElement = document.getElementById(`vm-name-${vmid}`);
+                            const vmNameForChart = vmNameElement ? JSON.stringify(vmNameElement.textContent.trim()) : JSON.stringify(`VM ${vmid}`);
+
+                            const statusCell = $(`#vm-status-${vmid}`); let statusHtml = '';
+                            if (vmData.status === 'running') { statusHtml = '<span style="color: #2ecc71; font-weight: bold;">running</span>'; } else if (vmData.status === 'stopped') { statusHtml = `<span style="color: #e74c3c;">stopped</span>`; if (vmRow.classList.contains('vm-potentially-idle')) { statusHtml += '<br><span class="idle-vm-highlight-text" style="font-size:0.9em;">(Potansiyel Idle!)</span>';}} else { statusHtml = `<span style="color: #e67e22;">${vmData.status || 'unknown'}</span>`; }
+                            statusCell.html(statusHtml);
+                            const cpuCell = $(`#vm-cpu-${vmid}`); const ramCell = $(`#vm-ram-${vmid}`); const diskIoCell = $(`#vm-disk-io-${vmid}`); const netIoCell = $(`#vm-net-io-${vmid}`); const suggestionCell = $(`#vm-suggestion-${vmid}`); const actionsCell = $(`#vm-actions-${vmid}`);
+                            if (vmData.status === 'running') {
+                                cpuCell.find('.cpu-now').html(`<a href="#" onclick="showMetricChart('${vmid}', ${vmNameForChart}, 'cpu_usage_percent_short', 'CPU Kullanımı (Anlık %)', 'hour'); return false;">${vmData.cpu_usage_percent !== null ? vmData.cpu_usage_percent.toFixed(2) : 'N/A'}</a>`);
+                                cpuCell.find('.cpu-avg').text(vmData.avg_cpu_usage_percent !== null ? vmData.avg_cpu_usage_percent.toFixed(2) : 'N/A');
+                                cpuCell.find('.cpu-max').text(vmData.max_cpu_usage_percent !== null ? vmData.max_cpu_usage_percent.toFixed(2) : 'N/A');
+                                $(`#sparkline-cpu-${vmid}`).attr('onclick', `showMetricChart('${vmid}', ${vmNameForChart}, 'cpu_usage_percent_short', 'CPU Kullanımı (Anlık %)', 'hour')`).text(vmData.cpu_history.join(',') || "0,0").change();
+                                ramCell.find('.ram-now').html(`<a href="#" onclick="showMetricChart('${vmid}', ${vmNameForChart}, 'ram_usage_percent_short', 'RAM Kullanımı (Anlık %)', 'hour'); return false;">${vmData.ram_usage_percent !== null ? vmData.ram_usage_percent.toFixed(2) : 'N/A'}</a>`);
+                                ramCell.find('.ram-avg').text(vmData.avg_ram_usage_percent !== null ? vmData.avg_ram_usage_percent.toFixed(2) : 'N/A');
+                                ramCell.find('.ram-max').text(vmData.max_ram_usage_percent !== null ? vmData.max_ram_usage_percent.toFixed(2) : 'N/A');
+                                $(`#sparkline-ram-${vmid}`).attr('onclick', `showMetricChart('${vmid}', ${vmNameForChart}, 'ram_usage_percent_short', 'RAM Kullanımı (Anlık %)', 'hour')`).text(vmData.ram_history.join(',') || "0,0").change();
+                                diskIoCell.find('.disk-read').html(`<a href="#" onclick="showMetricChart('${vmid}', ${vmNameForChart}, 'diskread_Bps', 'Disk Okuma (B/s)'); return false;">${formatBytes(vmData.diskread_Bps)}/s</a>`);
+                                diskIoCell.find('.disk-write').html(`<a href="#" onclick="showMetricChart('${vmid}', ${vmNameForChart}, 'diskwrite_Bps', 'Disk Yazma (B/s)'); return false;">${formatBytes(vmData.diskwrite_Bps)}/s</a>`);
+                                netIoCell.find('.net-in').html(`<a href="#" onclick="showMetricChart('${vmid}', ${vmNameForChart}, 'netin_Bps', 'Ağ Gelen (B/s)'); return false;">${formatBytes(vmData.netin_Bps)}/s</a>`);
+                                netIoCell.find('.net-out').html(`<a href="#" onclick="showMetricChart('${vmid}', ${vmNameForChart}, 'netout_Bps', 'Ağ Giden (B/s)'); return false;">${formatBytes(vmData.netout_Bps)}/s</a>`);
+                                if (vmData.is_underutilized && vmData.right_sizing_suggestion) { suggestionCell.html(`<strong>Öneri:</strong><br>${vmData.right_sizing_suggestion.replace(/; /g, '<br>')}`); vmRow.classList.add('vm-underutilized'); } else if (vmData.is_underutilized) { suggestionCell.text('Düşük kullanım tespit edildi.'); vmRow.classList.add('vm-underutilized'); } else { suggestionCell.text('-'); vmRow.classList.remove('vm-underutilized'); }
+                                if(actionsCell.length) { actionsCell.find('.btn-start').prop('disabled', true); actionsCell.find('.btn-shutdown, .btn-stop, .btn-reboot').prop('disabled', false); }
+                            } else { cpuCell.html('N/A'); ramCell.html('N/A'); diskIoCell.html('N/A'); netIoCell.html('N/A'); if (!vmRow.classList.contains('vm-potentially-idle')) { suggestionCell.text('-'); } vmRow.classList.remove('vm-underutilized'); if(actionsCell.length) { actionsCell.find('.btn-start').prop('disabled', false); actionsCell.find('.btn-shutdown, .btn-stop, .btn-reboot').prop('disabled', true); } }
+                            const cpuAvgSpan = cpuCell.find('.cpu-avg'); const ramAvgSpan = ramCell.find('.ram-avg');
+                            if (vmData.status === 'running' && vmData.is_underutilized && vmData.avg_cpu_usage_percent < {{cpu_suggestion_threshold}}) cpuAvgSpan.addClass('underutilized-highlight-text'); else cpuAvgSpan.removeClass('underutilized-highlight-text');
+                            if (vmData.status === 'running' && vmData.is_underutilized && vmData.avg_ram_usage_percent < {{ram_suggestion_threshold}}) ramAvgSpan.addClass('underutilized-highlight-text'); else ramAvgSpan.removeClass('underutilized-highlight-text');
+                        }
+                    }
+                })
+                .catch(error => console.error('Performans güncelleme hatası:', error));
+        }
+        document.addEventListener('DOMContentLoaded', function() {
+            $("span.sparkline-cpu").peity("line"); $("span.sparkline-ram").peity("line");
+            if(document.getElementById('vm-performance-tbody')){ performanceUpdateInterval = setInterval(updateVmPerformance, 7000); }
+            const snapshotForm = document.getElementById('snapshotForm');
+            if (snapshotForm) { snapshotForm.addEventListener('submit', function(event) { event.preventDefault(); const selectedSnapshotsCheckboxes = document.querySelectorAll('input[name="selected_snapshots"]:checked'); if (selectedSnapshotsCheckboxes.length === 0) { showFlashMessage('Lütfen silmek için en az bir snapshot seçin.', 'warning'); return false; } if (!confirm(selectedSnapshotsCheckboxes.length + ' adet snapshot silinecek. Emin misiniz?')) { return false; } const formData = new FormData(); selectedSnapshotsCheckboxes.forEach(checkbox => { formData.append('selected_snapshots', checkbox.value); }); const deleteButton = document.getElementById('deleteSnapshotsBtn'); const originalButtonText = deleteButton.textContent; deleteButton.disabled = true; deleteButton.textContent = 'Siliniyor...'; fetch("{{ url_for('delete_snapshots_route') }}", { method: 'POST', body: formData, headers: { 'X-CSRFToken': csrfToken } }).then(response => response.json()).then(data => { showFlashMessage(data.message, data.category || 'info'); if (data.errors && data.errors.length > 0) { data.errors.forEach(err => { showFlashMessage(`Hata (${err.id || 'Bilinmeyen'}): ${err.error}`, 'error_detail'); }); } if (data.status === "success" || data.status === "partial_success") { if (data.deleted_snapshots && data.deleted_snapshots.length > 0) { data.deleted_snapshots.forEach(snapIdentifier => { const checkboxToRemove = document.querySelector(`input[name="selected_snapshots"][value="${snapIdentifier}"]`); if (checkboxToRemove) { $(checkboxToRemove.closest('tr')).fadeOut(500, function() { $(this).remove(); }); } }); if (document.getElementById('selectAllCheckboxes')) { const remainingCheckboxes = document.querySelectorAll('input[name="selected_snapshots"]:not(:disabled)'); document.getElementById('selectAllCheckboxes').checked = remainingCheckboxes.length > 0 && Array.from(remainingCheckboxes).every(cb => cb.checked); if(remainingCheckboxes.length === 0) document.getElementById('selectAllCheckboxes').checked = false; }}}}).catch(error => { console.error('Snapshot silme hatası:', error); showFlashMessage('Snapshot silinirken bir ağ hatası oluştu.', 'danger'); }).finally(() => { deleteButton.disabled = false; deleteButton.textContent = originalButtonText; }); }); }
+            document.querySelectorAll('.vm-action-form').forEach(form => { form.addEventListener('submit', function(event) { event.preventDefault(); const actionButton = event.submitter || this.querySelector('button[type="submit"]'); if (!actionButton) { console.warn("Submitter button not found"); return false; } let vmName = "Bilinmeyen VM"; try { const nameCell = form.closest('tr').querySelector('td:nth-child(2)'); if(nameCell) vmName = nameCell.textContent.trim(); } catch(e){} if (!confirm(`"${vmName}" adlı VM için "${actionButton.textContent || actionButton.innerText}" işlemi yapılacak. Emin misiniz?`)) { return false; } const formData = new FormData(form); const originalButtonText = actionButton.textContent; const allButtonsInCell = form.closest('.vm-actions').querySelectorAll('button'); allButtonsInCell.forEach(btn => btn.disabled = true); actionButton.textContent = 'İşleniyor...'; fetch(form.action, { method: 'POST', body: formData, headers: { 'X-CSRFToken': csrfToken } }).then(response => response.json()).then(data => { showFlashMessage(data.message, data.category || 'info'); if (typeof updateVmPerformance === "function") { setTimeout(updateVmPerformance, 1500); } }).catch(error => { console.error('VM eylem hatası:', error); showFlashMessage('VM işlemi sırasında bir ağ hatası oluştu.', 'danger'); }).finally(() => { actionButton.textContent = originalButtonText; }); }); });
+            const selectAllCheckbox = document.getElementById('selectAllCheckboxes'); if (selectAllCheckbox) { selectAllCheckbox.addEventListener('change', function(event) { var checkboxes = document.getElementsByName('selected_snapshots'); for (var i = 0; i < checkboxes.length; i++) { if (!checkboxes[i].disabled) { checkboxes[i].checked = event.target.checked; }} }); }
+            setTimeout(() => { $('.initial-flash').fadeOut(500, function() { $(this).remove(); }); }, 6000);
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+# Sanal Ortamlar
+.venv/
+venv/
+
+# IDE/Editör Özel Dosyaları
+.idea/
+
+# Build & Cache Klasörleri
+.mypy_cache/
+__pycache__/
+*.pyc
+
+# Hassas Bilgiler
+.env

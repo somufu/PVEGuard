@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PVEGuard - Hakkımızda</title>
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="navbar">
+        <ul>
+            <li><a href="{{ url_for('index') }}">Gösterge Paneli</a></li>
+            <li><a href="{{ url_for('about_page') }}" class="active">Hakkımızda</a></li>
+        </ul>
+    </div>
+
+    <div class="container">
+        <h1>PVEGuard Hakkında</h1>
+
+        <section>
+            <h2>Projenin Kapsamı ve Amacı</h2>
+            <p>
+                PVEGuard, Proxmox Sanallaştırma Ortamı (PVE) kullanıcıları için geliştirilmiş bir yönetim ve optimizasyon aracıdır. Temel amacı, sanal makine (VM) snapshot'larının yönetimini kolaylaştırmak, kaynak kullanımını izlemek ve optimizasyon önerileri sunarak PVE ortamınızın daha verimli çalışmasına yardımcı olmaktır.
+            </p>
+            <p><strong>PVEGuard ile Neler Yapabilirsiniz?</strong></p>
+            <ul>
+                <li><strong>Snapshot Yönetimi:</strong>
+                    <ul>
+                        <li>Tüm VM ve CT (konteyner) snapshot'larını tek bir arayüzden listeleyin.</li>
+                        <li>Snapshot'ları oluşturulma tarihine, kaynak adına veya snapshot adına göre sıralayın ve filtreleyin.</li>
+                        <li>Belirli bir tarihten önceki snapshot'ları kolayca görüntüleyin.</li>
+                        <li><span class="orphaned-highlight-text" style="background-color: #333; color: #ffeb3b; padding: 2px 4px; border-radius:3px;">"Sahipsiz Eski Kök"</span> (artık aktif bir VM durumuna bağlı olmayan eski ve parent'sız) snapshot'ları tespit edin.</li>
+                        <li>Durdurulmuş VM'lerdeki eski snapshot'ları ve genel olarak tanımlanan süreden daha eski snapshot'ları belirleyin.</li>
+                        <li>Seçili snapshot'ları toplu olarak silin.</li>
+                    </ul>
+                </li>
+                <li><strong>VM Performans İzleme ve Optimizasyon:</strong>
+                    <ul>
+                        <li>Çalışan QEMU VM'lerinin anlık, ortalama ve maksimum CPU ve RAM kullanım yüzdelerini takip edin.</li>
+                        <li>Disk G/Ç (Okuma/Yazma Byte/s) ve Ağ trafiği (Gelen/Giden Byte/s) gibi ek performans metriklerini izleyin.</li>
+                        <li>Metrik değerlerine veya sparkline grafiklerine tıklayarak belirli bir metrik için daha detaylı (örn: son 1 saat, 1 gün) geçmiş performans grafiklerini görüntüleyin.</li>
+                        <li>Belirlenen eşiklerin altında kaynak kullanan (yetersiz kullanılan) VM'ler için vCPU ve RAM azaltma önerileri alın.</li>
+                        <li>Uzun süredir kapalı olan ve eski snapshot'lara sahip "potansiyel atıl" (idle) VM'leri tespit edin.</li>
+                        <li>VM'ler için temel eylemleri (Başlat, Kapat, Durdur (Zorla), Yeniden Başlat) arayüz üzerinden gerçekleştirin.</li>
+                    </ul>
+                </li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Nasıl Kullanılır?</h2>
+            <p>
+                PVEGuard'ı kullanmaya başlamak için öncelikle Proxmox VE API bilgilerinizi içeren bir <code>.env</code> dosyası oluşturmanız gerekmektedir. Bu dosya, PVEGuard'ın Proxmox sunucunuza bağlanabilmesi için gerekli olan <code>PROXMOX_HOST</code>, <code>PROXMOX_USER</code> ve <code>PROXMOX_PASSWORD</code> bilgilerini barındırmalıdır. SSL doğrulamasını (<code>PROXMOX_VERIFY_SSL</code>) isteğe bağlı olarak yapılandırabilirsiniz. Ayrıca, uygulamanın güvenliği için <code>APP_SECRET_KEY</code> adında bir gizli anahtar da bu dosyada tanımlanmalıdır.
+            </p>
+            <p>
+                Uygulama başlatıldıktan sonra, web tarayıcınız üzerinden erişebilirsiniz. Ana "Gösterge Paneli" sayfasında şunları bulacaksınız:
+            </p>
+            <ul>
+                <li>Filtreleme seçenekleri (Maksimum Snapshot Tarihi, Snapshot Eskilik Eşiği, Atıl VM Eşiği).</li>
+                <li>Önemli durumlar için uyarı kutucukları (Sahipsiz snapshot sayısı, yetersiz kullanılan VM sayısı vb.).</li>
+                <li>Tüm QEMU sanal makinelerinin listesi, performans metrikleri (CPU, RAM, Disk G/Ç, Ağ), optimizasyon önerileri ve eylem butonları. Performans metriklerine veya yanlarındaki mini grafiklere (sparkline) tıklayarak ilgili metriğin daha detaylı geçmiş grafiğini açabilirsiniz.</li>
+                <li>Tüm snapshot'ların (QEMU ve LXC) listesi, detayları ve toplu silme için seçim kutucukları.</li>
+            </ul>
+            <p>
+                Tablo başlıklarına tıklayarak sıralama yapabilir, VM'ler üzerinde eylemler gerçekleştirebilir ve seçtiğiniz snapshot'ları silebilirsiniz. Tüm işlemler AJAX ile yapıldığı için sayfa yenilenmeden hızlıca sonuçları görebilirsiniz.
+            </p>
+        </section>
+
+        <section>
+            <h2>Motivasyonumuz: Neden PVEGuard?</h2>
+            <p>
+                Proxmox VE, güçlü ve esnek bir sanallaştırma platformu olsa da, özellikle çok sayıda VM ve snapshot barındıran ortamlarda bazı yönetim görevleri zaman alıcı ve karmaşık hale gelebilir. PVEGuard'ın geliştirilmesindeki temel motivasyonlar şunlardır:
+            </p>
+            <ul>
+                <li><strong>Snapshot Kirliliği:</strong> Zamanla biriken eski, gereksiz veya unutulmuş snapshot'lar hem depolama alanını tüketir hem de yönetimi zorlaştırır. Özellikle "sahipsiz" kalan snapshot'ları bulmak ve güvenle silmek önemlidir.</li>
+                <li><strong>Kaynak İsrafı:</strong> Yetersiz kullanılan veya atıl durumda olan sanal makineler, değerli sistem kaynaklarını (CPU, RAM) boşa harcayabilir. Bu kaynakların doğru şekilde boyutlandırılması verimliliği artırır.</li>
+                <li><strong>Merkezi Bakış Açısı ve Detaylı Analiz:</strong> Farklı VM'lerin performansını ve snapshot durumunu tek bir yerden görmek, genel sistem sağlığı hakkında hızlıca fikir edinmeyi sağlar. Detaylı grafikler, performans sorunlarının kök nedenlerini bulmada yardımcı olur.</li>
+                <li><strong>İş Akışı Kolaylığı:</strong> Sık yapılan yönetim görevlerini (snapshot silme, VM durumunu değiştirme) basitleştirmek ve hızlandırmak.</li>
+            </ul>
+            <p>
+                PVEGuard, bu ihtiyaçlara cevap vererek sistem yöneticilerinin Proxmox VE ortamlarını daha etkin bir şekilde yönetmelerine yardımcı olmayı hedefler.
+            </p>
+        </section>
+
+        <section>
+            <h2>Vizyonumuz: Gelecek Planları</h2>
+            <p>
+                PVEGuard'ı Proxmox VE için kapsamlı bir yardımcı araç haline getirmeyi hedefliyoruz. Gelecekte eklemeyi planladığımız bazı özellikler şunlardır:
+            </p>
+            <ul>
+                <li>Daha gelişmiş analitikler ve raporlama (örn: atıl kaynakların potansiyel maliyet tasarrufu).</li>
+                <li>Proxmox Backup Server (PBS) entegrasyonu ile yedekleme işlerinin izlenmesi ve yönetimi.</li>
+                <li>Kullanıcı tarafından yapılandırılabilen otomatik snapshot temizleme politikaları (her zaman kullanıcı onayı ile).</li>
+                <li>VM ve snapshot etiketleme/gruplama özellikleri.</li>
+                <li>Belirli olaylar için bildirim (alerting) mekanizmaları.</li>
+                <li>Kullanıcı rolleri ve yetkilendirme (PVEGuard'ı birden fazla kişinin kullanacağı senaryolar için).</li>
+                <li>Konteyner (LXC) kaynak kullanımı izleme ve optimizasyon önerileri (detaylı grafikler dahil).</li>
+                <li>Grafik modalında özel zaman aralığı seçimi.</li>
+            </ul>
+            <p>
+                Kullanıcı geri bildirimlerini dikkate alarak PVEGuard'ı sürekli geliştirmeyi ve Proxmox VE topluluğuna değer katmayı amaçlıyoruz.
+            </p>
+        </section>
+    </div>
+</body>
+</html>
