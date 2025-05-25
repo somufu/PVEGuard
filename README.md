@@ -85,7 +85,8 @@ PVEGuard, Proxmox Sanallaştırma Ortamı (PVE) kullanıcıları için geliştir
 
 ## 🖼️ Ekran Görüntüleri
 
-**
+![image](https://github.com/user-attachments/assets/c5d76793-83db-4d56-bb67-b3034dae4220)
+
 
 ## 🤝 Katkıda Bulunma
 
