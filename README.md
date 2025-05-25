@@ -1,3 +1,6 @@
+![ascii-text-art](https://github.com/user-attachments/assets/10a613ac-8b53-4079-9002-822795d48fd2)
+
+
 # PVEGuard: Proxmox VE Snapshot ve Kaynak Yönetim Aracı
 
 PVEGuard, Proxmox Sanallaştırma Ortamı (PVE) kullanıcıları için geliştirilmiş, web tabanlı bir yönetim ve optimizasyon aracıdır. Temel amacı, sanal makine (VM) ve konteyner (CT) snapshot'larının yönetimini kolaylaştırmak, kaynak kullanımını izlemek ve optimizasyon önerileri sunarak PVE ortamınızın daha verimli çalışmasına yardımcı olmaktır.
